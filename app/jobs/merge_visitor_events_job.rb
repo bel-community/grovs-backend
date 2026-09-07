@@ -74,12 +74,8 @@ class MergeVisitorEventsJob
         to_visitor.save!
       end
 
-      # Merge actions, links and events in bulk
-      from_device.actions.update_all(device_id: to_device.id)
       from_visitor.links.update_all(visitor_id: to_visitor.id)
-      # Chunked and re-locked per batch — a multi-million-event merge can outlive LOCK_TTL.
-      from_device.events.in_batches(of: 50_000, use_ranges: true) do |batch|
-        batch.update_all(device_id: to_device.id, platform: to_device.platform)
+      repoint_device_rows(project, from_device, to_device) do
         renew_device_locks(from_device_id, to_device_id, project_id)
       end
 
@@ -89,7 +85,7 @@ class MergeVisitorEventsJob
         renew_device_locks(from_device_id, to_device_id, project_id)
       end
 
-      repoint_device_scoped_purchase_state(from_device, to_device)
+      repoint_device_scoped_purchase_state(project, from_device, to_device)
 
       # Transfer last-visit attribution (keep the most recent one)
       from_vlv = VisitorLastVisit.find_by(project_id: project.id, visitor_id: from_visitor.id)
@@ -172,6 +168,17 @@ class MergeVisitorEventsJob
     Rails.logger.warn("MergeVisitorEventsJob: breadcrumb refresh failed: #{e.message}")
   end
 
+  # A device spans projects (one Device, one Visitor per project): only this project's rows move.
+  def repoint_device_rows(project, from_device, to_device)
+    project_link_ids = Link.joins(:domain).where(domains: { project_id: project.id }).select(:id)
+    from_device.actions.where(link_id: project_link_ids).update_all(device_id: to_device.id)
+    # Chunked and re-locked per batch — a multi-million-event merge can outlive LOCK_TTL.
+    from_device.events.where(project_id: project.id).in_batches(of: 50_000, use_ranges: true) do |batch|
+      batch.update_all(device_id: to_device.id, platform: to_device.platform)
+      yield
+    end
+  end
+
   # Mirrors after_commit :clear_cache; best-effort, self-heals via TTL.
   def invalidate_visitor_cache(cache_keys)
     REDIS.del(*cache_keys) if cache_keys.present?
@@ -223,13 +230,13 @@ class MergeVisitorEventsJob
   # device_id repoints too (like events) so an UNPROCESSED purchase on the retired
   # device still resolves to the surviving visitor when it processes later.
   def repoint_purchase_ledger(project, from_visitor, to_visitor, from_device, to_device)
-    PurchaseEvent.where(project_id: project.id, visitor_id: from_visitor.id)
+    PurchaseEvent.where(project_id: [project.id, nil], visitor_id: from_visitor.id)
                  .in_batches(of: 10_000) do |batch|
       batch.update_all(visitor_id: to_visitor.id)
       yield if block_given?
     end
 
-    PurchaseEvent.where(device_id: from_device.id)
+    PurchaseEvent.where(project_id: [project.id, nil], device_id: from_device.id)
                  .in_batches(of: 10_000) do |batch|
       batch.update_all(device_id: to_device.id)
       yield if block_given?
@@ -237,16 +244,17 @@ class MergeVisitorEventsJob
   end
 
   # Device-keyed state a renewal / first-purchase check reads by device, not visitor.
-  def repoint_device_scoped_purchase_state(from_device, to_device)
-    SubscriptionState.where(device_id: from_device.id).update_all(device_id: to_device.id)
+  def repoint_device_scoped_purchase_state(project, from_device, to_device)
+    SubscriptionState.where(project_id: project.id, device_id: from_device.id).update_all(device_id: to_device.id)
 
+    from_rows = DeviceProductPurchase.where(project_id: project.id, device_id: from_device.id)
     # Drop from-rows that would collide with an existing survivor row (unique device+project+product).
-    DeviceProductPurchase.where(device_id: from_device.id).where(
+    from_rows.where(
       "EXISTS (SELECT 1 FROM device_product_purchases d2 WHERE d2.device_id = ? " \
       "AND d2.project_id = device_product_purchases.project_id " \
       "AND d2.product_id = device_product_purchases.product_id)", to_device.id
     ).delete_all
-    DeviceProductPurchase.where(device_id: from_device.id).update_all(device_id: to_device.id)
+    from_rows.update_all(device_id: to_device.id)
   end
 
   # The CH fold (MergeVisitorClickhouseFoldJob) is separate and stays unconditional.

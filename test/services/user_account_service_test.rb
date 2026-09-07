@@ -24,23 +24,17 @@ class UserAccountServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "register accepts pending invitation and clears invitation state" do
+  test "register rejects a pending invitee — only the invitation token may claim that account" do
     invited_user = User.invite!({ email: @email }, User.create!(email: "inviter@test.com", password: "password123"))
     assert invited_user.invitation_token.present?
-    original_id = invited_user.id
 
-    WelcomeMailer.stub(:welcome, OpenStruct.new(deliver_later: true)) do
-      assert_no_difference "User.count" do
-        user = UserAccountService.register(email: @email, password: @password, name: @name)
-        assert_equal original_id, user.id
-        assert_equal @name, user.name
-        assert user.valid_password?(@password), "Invited user should authenticate with new password"
-
-        user.reload
-        assert_nil user.invitation_token, "Invitation token should be cleared"
-        assert user.invitation_accepted_at.present?, "Invitation accepted timestamp should be set"
-      end
+    assert_no_difference "User.count" do
+      assert_raises(ArgumentError) { UserAccountService.register(email: @email, password: @password, name: @name) }
     end
+
+    invited_user.reload
+    assert invited_user.invitation_token.present?, "invitation must stay pending"
+    assert_not invited_user.valid_password?(@password), "sign-up must not set the invitee's password"
   end
 
   test "register raises for existing non-invited user" do

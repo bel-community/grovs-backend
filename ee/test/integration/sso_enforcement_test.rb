@@ -77,6 +77,14 @@ class SsoEnforcementTest < ActionDispatch::IntegrationTest
     assert_match(/organisation's SSO/, err.message)
   end
 
+  test "a returning social identity cannot dodge enforcement with a changed email claim" do
+    User.create!(email: "member2@example.com", password: "Password123!", provider: "google_oauth2", uid: "g-stable")
+    info = OpenStruct.new(display_name: "M", name: "M", email: "personal@gmail.com")
+    auth = OpenStruct.new(provider: "google_oauth2", uid: "g-stable", info: info, extra: OpenStruct.new(raw_info: {}))
+    err = assert_raises(RuntimeError) { SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth) }
+    assert_match(/organisation's SSO/, err.message)
+  end
+
   test "rake sso:disable_enforce turns enforcement off" do
     Rails.application.load_tasks unless Rake::Task.task_defined?("sso:disable_enforce")
     Rake::Task["sso:disable_enforce"].reenable

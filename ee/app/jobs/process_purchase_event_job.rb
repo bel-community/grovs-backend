@@ -17,8 +17,8 @@ class ProcessPurchaseEventJob
   end
 
   # @param purchase_event_id [Integer]
-  # @param old_usd_price_cents [Integer, nil] when non-nil this is a price-correction
-  #   run: only the revenue delta (new - old) is applied to stats.
+  # @param old_usd_price_cents [Integer, nil] non-nil selects the correction path; the delta itself comes
+  #   from accounted_usd_price_cents, and this value is only the baseline for rows that predate that column.
   def perform(purchase_event_id, old_usd_price_cents = nil)
     event = PurchaseEvent.includes(:device).find_by(id: purchase_event_id)
     return unless event
@@ -38,7 +38,7 @@ class ProcessPurchaseEventJob
     # and data loss from partial failures.
     ActiveRecord::Base.transaction do
       rows = PurchaseEvent.where(id: event.id, processed: false)
-                          .update_all(processed: true)
+                          .update_all(processed: true, accounted_usd_price_cents: event.usd_price_cents.to_i)
       if rows == 0
         Rails.logger.debug { "ProcessPurchaseEventJob: event #{purchase_event_id} already processed, skipping" }
         return
@@ -90,17 +90,20 @@ class ProcessPurchaseEventJob
   # Webhook delivered authoritative pricing after the event was already
   # processed.  Compute the difference and apply it as a correction.
   def apply_correction(event, old_cents)
-    old_delta  = event.revenue_delta(old_cents.to_i)
-    new_delta  = event.revenue_delta
-    correction = (new_delta || 0) - (old_delta || 0)
-    return if correction == 0
-
-    # Snapshot platform, not a recompute — a device whose platform changed since
-    # processing must not split one purchase's money across two platforms.
-    platform   = event.revenue_platform || determine_platform(event)
-    event_date = event_date_for(event)
-
     ActiveRecord::Base.transaction do
+      # Row lock + delta from the persisted accounted price: concurrent or redelivered corrections serialize
+      # and each applies only what the ledger has not counted yet. NULL predates the column; trust the argument.
+      event.lock!
+      accounted  = event.accounted_usd_price_cents || old_cents.to_i
+      correction = (event.revenue_delta || 0) - (event.revenue_delta(accounted) || 0)
+      return if correction == 0
+
+      event.update_columns(accounted_usd_price_cents: event.usd_price_cents.to_i)
+      # Snapshot platform, not a recompute — a device whose platform changed since
+      # processing must not split one purchase's money across two platforms.
+      platform   = event.revenue_platform || determine_platform(event)
+      event_date = event_date_for(event)
+
       # Snapshot visitor too — a device re-pointed to a different visitor since
       # processing must not split one purchase's money across two visitors.
       update_visitor_stats(event, platform, event_date, correction, visitor: event.visitor)

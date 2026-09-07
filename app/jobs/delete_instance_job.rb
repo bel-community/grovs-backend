@@ -1,7 +1,8 @@
 # app/jobs/delete_instance_job.rb
 class DeleteInstanceJob
   include Sidekiq::Worker
-  sidekiq_options queue: :maintenance, retry: 2
+  # Every step is an idempotent delete, so retries are cheap; a CH outage must not strand a half-deleted tenant.
+  sidekiq_options queue: :maintenance, retry: 10
 
   BATCH_SIZE     = 50_000
   SUB_BATCH_SIZE = 10_000
@@ -101,11 +102,11 @@ class DeleteInstanceJob
     remove_screen_aliases_for_projects(project_ids)
     log "screen aliases removed"
 
-    # ClickHouse cleanup — fire-and-forget after all PG deletes.
-    # Must run before projects are deleted (we need project_ids).
+    # Before the project rows go: a failed CH sweep must retry while the instance still exists.
     log "removing ClickHouse data for projects"
-    ClickhouseDeleteService.delete_projects(project_ids)
-    log "ClickHouse data removed"
+    raise "ClickHouse delete failed for projects #{project_ids.inspect}" unless ClickhouseDeleteService.delete_projects(project_ids)
+
+    log "ClickHouse deletes queued"
 
     log "Removing projects"
     Project.unscoped.where(id: project_ids).delete_all

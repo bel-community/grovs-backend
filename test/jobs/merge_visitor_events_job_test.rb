@@ -50,6 +50,23 @@ class MergeVisitorEventsJobTest < ActiveSupport::TestCase
     assert Event.where(device_id: to_dev.id).all? { |e| e.platform == "android" }, "Events should inherit to_device platform"
   end
 
+  test "a merge in one project leaves the same device's rows in another project untouched" do
+    from_dev, to_dev, from_vis, _to_vis = create_merge_pair
+    other = projects(:two)
+    other_vis = Visitor.create!(device: from_dev, project: other)
+    Event.create!(device: from_dev, project: @project, event: "view", platform: "ios")
+    Event.create!(device: from_dev, project: other, event: "view", platform: "ios")
+    other_purchase = PurchaseEvent.create!(project: other, device: from_dev, event_type: "buy", price_cents: 100, currency: "USD",
+                                           transaction_id: "other-#{SecureRandom.hex(4)}")
+
+    perform_merge(from_dev, to_dev, from_vis)
+
+    assert_equal 1, Event.where(device_id: from_dev.id, project_id: other.id).count, "other project's event must stay"
+    assert_equal 0, Event.where(device_id: from_dev.id, project_id: @project.id).count
+    assert_equal from_dev.id, other_purchase.reload.device_id
+    assert Visitor.exists?(other_vis.id), "other project's visitor must stay"
+  end
+
   test "enqueues the ClickHouse fold job (merged->survivor) instead of deleting canonical data" do
     from_dev, to_dev, from_vis, to_vis = create_merge_pair
     enqueued = nil

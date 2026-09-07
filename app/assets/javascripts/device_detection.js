@@ -4,7 +4,10 @@ function isIphone() {
 }
 
 function isIpad() {
-  return /iPad/.test(navigator.userAgent) && !window.MSStream;
+  // iPadOS 13+ Safari and Chrome send a Macintosh UA by default; the touch points tell it apart from a Mac.
+  return (/iPad/.test(navigator.userAgent) ||
+          (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1)) &&
+         !window.MSStream;
 }
 
 function isMac() {

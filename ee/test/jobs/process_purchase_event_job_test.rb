@@ -209,6 +209,40 @@ class ProcessPurchaseEventJobTest < ActiveSupport::TestCase
       "Should increment revenue by correction (999 - 500 = 499)"
   end
 
+  test "a redelivered correction applies its delta once" do
+    event = purchase_events(:buy_event)
+    platform = Grovs::Platforms::IOS
+    metric = DailyProjectMetric.find_or_create_by!(project_id: event.project_id, platform: platform, event_date: event.date.to_date)
+    before = metric.revenue || 0
+
+    @job.perform(event.id, 500)
+    @job.perform(event.id, 500)
+
+    assert_equal 499, metric.reload.revenue - before, "second delivery must be a no-op"
+    assert_equal 999, event.reload.accounted_usd_price_cents
+  end
+
+  test "a stale correction argument applies the delta against the persisted accounted price" do
+    event = purchase_events(:buy_event)
+    platform = Grovs::Platforms::IOS
+    metric = DailyProjectMetric.find_or_create_by!(project_id: event.project_id, platform: platform, event_date: event.date.to_date)
+    before = metric.revenue || 0
+
+    @job.perform(event.id, 500)           # 500 -> 999
+    event.update_columns(usd_price_cents: 1499)
+    @job.perform(event.id, 999)           # 999 -> 1499
+    @job.perform(event.id, 500)           # stale redelivery: ledger already at 1499
+
+    assert_equal 999, metric.reload.revenue - before
+    assert_equal 1499, event.reload.accounted_usd_price_cents
+  end
+
+  test "processing stamps the accounted price so a later correction can be claimed" do
+    event = purchase_events(:unprocessed_buy)
+    @job.perform(event.id)
+    assert_equal event.usd_price_cents, event.reload.accounted_usd_price_cents
+  end
+
   test "apply_correction skips when no difference" do
     event = purchase_events(:buy_event)
     platform = Grovs::Platforms::IOS

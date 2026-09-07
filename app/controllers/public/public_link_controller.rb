@@ -35,7 +35,10 @@ class Public::PublicLinkController < ActionController::Base
       link.image.attach(image_param)
     end
 
-    link.save!
+    unless link.save
+      render json: { error: link.errors.full_messages.to_sentence }, status: :unprocessable_entity
+      return
+    end
 
     render json: {link: QuickLinkSerializer.serialize(link)}, status: :ok
   end

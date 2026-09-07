@@ -48,6 +48,8 @@ module ScimV2
 
     def save!(record)
       super(record) do |user|
+        raise operator_refusal if user.super_admin?
+
         check_domain!(user)
         was_new = user.new_record?
         user.save!

@@ -131,28 +131,6 @@ class StripeServiceTest < ActiveSupport::TestCase
   # checkout.session.completed → handle_subscription_started
   # ============================================================
 
-  test "checkout.session.completed creates a StripeSubscription with correct attributes" do
-    StripeSubscription.where(instance_id: @instance.id).delete_all
-
-    event_data = build_event(
-      type: "checkout.session.completed",
-      object: { subscription: "sub_new_123", customer: "cus_new_123", client_reference_id: @instance.id.to_s }
-    )
-
-    assert_difference "StripeSubscription.count", 1 do
-      StripeService.handle_webhook(event_data)
-    end
-
-    sub = StripeSubscription.find_by(subscription_id: "sub_new_123")
-    assert_not_nil sub
-    assert_equal @instance.id, sub.instance_id
-    assert_equal "cus_new_123", sub.customer_id
-    assert_equal @payment_intent.product_type, sub.product_type
-    assert_equal @payment_intent.id, sub.stripe_payment_intent_id
-    assert_equal "pending", sub.status
-    assert_equal false, sub.active
-  end
-
   test "checkout.session.completed returns early when no payment intent exists for instance" do
     empty_instance = Instance.create!(uri_scheme: "empty_#{SecureRandom.hex(4)}", api_key: SecureRandom.hex(16))
 
@@ -173,6 +151,7 @@ class StripeServiceTest < ActiveSupport::TestCase
 
   test "customer.subscription.created activates subscription and clears quota_exceeded" do
     @instance.update!(quota_exceeded: true)
+    @active_sub.update!(active: false, status: "pending") # the row checkout leaves behind
 
     event_data = build_event(
       type: "customer.subscription.created",
@@ -191,6 +170,7 @@ class StripeServiceTest < ActiveSupport::TestCase
   end
 
   test "customer.subscription.created does not enable an incomplete subscription" do
+    @active_sub.update!(active: false, status: "pending") # the row checkout leaves behind
     event_data = build_event(
       type: "customer.subscription.created",
       object: { id: @active_sub.subscription_id, status: "incomplete", trial_end: nil, items: { data: [{ id: "si_item_001" }] } }

@@ -230,6 +230,35 @@ class SessionBuildJobTest < ActiveSupport::TestCase
     assert_equal [[1, [1]]], @job.send(:eligible_visitor_buckets, @project.id)
   end
 
+  test 'a summary that failed after its events were inserted is rebuilt on the next pass' do
+    now = Time.current
+    key = @job.send(:pending_summary_key, @project.id)
+    insert_ch_session_events([{
+      project_id: @project.id, session_id: 'sess_retry', visitor_id: 1,
+      event_id: 'r1', event_type: 'VIEW', event_name: 'page_view', screen_name: 'Home',
+      platform: 'ios', app_version: '2.0', event_date: now.to_date.to_s, created_at: fmt(now)
+    }])
+    @job.stub(:eligible_visitor_buckets, ->(_pid) { [[1, [1, 7]]] }) do
+      @job.stub(:sessionize_and_insert, ->(_pid, _buckets, affected) { affected << 'sess_retry' }) do
+        @job.stub(:build_session_summaries, ->(*) { raise 'ch timeout' }) do
+          assert_raises(RuntimeError) { @job.send(:build_sessions_for_project, @project.id) }
+        end
+      end
+    end
+    parked = @job.send(:pending_summary_work, @project.id)
+    assert_equal Set['sess_retry'], parked[:sessions]
+    assert_equal({ 7 => 1 }, parked[:aliases], 'merge aliases must survive to the retry')
+
+    @job.stub(:eligible_visitor_buckets, ->(_pid) { [] }) do
+      @job.send(:build_sessions_for_project, @project.id)
+    end
+
+    assert_equal 1, ch_query('session_summary', @project.id).count { |r| r['session_id'] == 'sess_retry' }
+    assert_nil REDIS.with { |c| c.get(key) }
+  ensure
+    REDIS.with { |c| c.del(key) } if key
+  end
+
   # ── build_session_summaries ──────────────────────────────────────────
 
   test 'build_session_summaries: aggregates session_events into session_summary' do

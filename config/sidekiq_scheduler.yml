@@ -58,6 +58,10 @@
       cron: "30 4 * * *"  # daily at 04:30 UTC — deletes analytics rows older than each instance's delete_days
       class: "AnalyticsRetentionDeletionJob"
       queue: maintenance
+    process_unprocessed_purchase_events:
+      cron: "9,19,29,39,49,59 * * * *"  # every 10 min — re-enqueues validated purchases whose processing enqueue was lost
+      class: "ProcessUnprocessedPurchaseEventsJob"
+      queue: maintenance
     drain_canonical_dlq:
       cron: "4,9,14,19,24,29,34,39,44,49,54,59 * * * *"  # every 5 min — replays DLQ'd canonical CH batches
       class: "DrainCanonicalDlqJob"

@@ -48,6 +48,8 @@ class SsoAuthenticationService
     # Match the immutable (provider, uid) before email — a forged email claim can't spoof it.
     identified = User.find_by(provider: auth_hash.provider, uid: auth_hash.uid)
     if identified
+      raise SsoEnforcement::REFUSAL if SsoEnforcement.enforced_connection_id(identified.email)
+
       accept_pending_invitation(identified)
       identified.save! if identified.changed?
       return identified

@@ -274,6 +274,18 @@ class McpTokenEndpointTest < ActionDispatch::IntegrationTest
     assert_response :ok
   end
 
+  test "a consumed refresh token is rejected on replay" do
+    started = Time.current
+    tokens = obtain_mcp_token_via_consent(user: @user, doorkeeper_headers: @doorkeeper_headers)
+    params = { grant_type: "refresh_token", refresh_token: tokens[:refresh_token], client_id: tokens[:client_id] }
+
+    post "/token", params: params, headers: mcp_host_headers, as: :json
+    assert_response :ok
+    post "/token", params: params, headers: mcp_host_headers, as: :json
+    assert_response :bad_request
+    assert_equal 1, McpToken.where(user: @user, revoked_at: nil, created_at: started..).count, "exactly one live successor"
+  end
+
   test "refresh_token grant with invalid refresh token returns 400" do
     post "/token",
       params: {

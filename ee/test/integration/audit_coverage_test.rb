@@ -10,7 +10,7 @@ class AuditCoverageTest < ActiveSupport::TestCase
     "Api::V1::InstancesController#set_revenue_collection_enabled" => "instance.revenue_collection_changed",
     "Api::V1::InstancesController#dismiss_get_started" => :exempt,
     "Api::V1::InstancesController#complete_setup_step" => :exempt,
-    "Api::V1::UsersController#create" => "user.invite_accepted",
+    "Api::V1::UsersController#create" => :exempt, # fresh sign-up: no instance to record against
     "Api::V1::UsersController#reset_password" => "user.password_reset_requested",
     "Api::V1::UsersController#change_password" => "user.password_changed",
     "Api::V1::UsersController#accept_invite" => "user.invite_accepted",

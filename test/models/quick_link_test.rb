@@ -30,49 +30,41 @@ class QuickLinkTest < ActiveSupport::TestCase
     assert result.include?(ql.path)
   end
 
-  # === valid_url? ===
-
-  test "valid_url? returns true for https URL" do
-    ql = quick_links(:basic_quick_link)
-    assert ql.valid_url?("https://www.example.com")
+  test "every destination rejects a javascript: scheme, including host-bearing forms" do
+    QuickLink::DESTINATIONS.each do |field|
+      ql = quick_links(:basic_quick_link)
+      ql[field] = "javascript:alert(1)"
+      assert_not ql.valid?, "#{field} must reject javascript:"
+      ql[field] = "javascript://example.com/%0aalert(1)"
+      assert_not ql.valid?, "#{field} must reject javascript:// with a host"
+      ql[field] = "https://example.com/?a=1&b=2"
+      assert ql.valid?, "#{field} must accept https: #{ql.errors.full_messages}"
+    end
   end
 
-  test "valid_url? returns true for http URL" do
+  test "a bare host is stored with https:// so it does not navigate relatively" do
     ql = quick_links(:basic_quick_link)
-    assert ql.valid_url?("http://www.example.com")
+    ql.ios_phone = " www.example.com "
+    assert ql.valid?, ql.errors.full_messages.inspect
+    assert_equal "https://www.example.com", ql.ios_phone
   end
 
-  test "valid_url? returns true for URL without scheme if it has a dot" do
+  test "custom app schemes are accepted, blocked schemes are refused in any casing or with leading whitespace" do
     ql = quick_links(:basic_quick_link)
-    assert ql.valid_url?("www.example.com")
+    ql.ios_phone = "myapp://open/test?x=1"
+    assert ql.valid?, ql.errors.full_messages.inspect
+    ["  JavaScript:alert(1)", "data:text/html,<script>alert(1)</script>", "vbscript:msgbox"].each do |bad|
+      ql.desktop = bad
+      assert_not ql.valid?, "#{bad.inspect} must be rejected"
+    end
   end
 
-  test "valid_url? returns false for nil" do
+  test "destinations returns the eight fields in JS argument order with blanks as nil" do
     ql = quick_links(:basic_quick_link)
-    assert_not ql.valid_url?(nil)
+    ql.desktop = ""
+    assert_equal QuickLink::DESTINATIONS.length, ql.destinations.length
+    assert_nil ql.destinations[QuickLink::DESTINATIONS.index(:desktop)]
   end
-
-  test "valid_url? returns false for empty string" do
-    ql = quick_links(:basic_quick_link)
-    assert_not ql.valid_url?("")
-  end
-
-  test "valid_url? returns false for string without dot" do
-    ql = quick_links(:basic_quick_link)
-    assert_not ql.valid_url?("notaurl")
-  end
-
-  test "valid_url? returns false for string with spaces" do
-    ql = quick_links(:basic_quick_link)
-    assert_not ql.valid_url?("not a url")
-  end
-
-  test "valid_url? strips whitespace" do
-    ql = quick_links(:basic_quick_link)
-    assert ql.valid_url?("  https://www.example.com  ")
-  end
-
-  # === ios_phone_must_be_valid_url ===
 
   test "ios_phone with valid URL passes validation" do
     ql = quick_links(:basic_quick_link)
@@ -95,8 +87,6 @@ class QuickLinkTest < ActiveSupport::TestCase
     assert_not ql.errors[:ios_phone].any?
   end
 
-  # === android_phone_must_be_valid_url ===
-
   test "android_phone with valid URL passes validation" do
     ql = quick_links(:basic_quick_link)
     ql.android_phone = "https://play.google.com/store/apps/details?id=com.test"
@@ -117,8 +107,6 @@ class QuickLinkTest < ActiveSupport::TestCase
     ql.validate
     assert_not ql.errors[:android_phone].any?
   end
-
-  # === optional_urls_must_be_valid ===
 
   test "optional URL fields with valid URLs pass" do
     ql = quick_links(:basic_quick_link)

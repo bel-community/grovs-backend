@@ -68,16 +68,15 @@ module ClickhouseDeleteService
     "#{TOMBSTONE_PREFIX}:#{Integer(project_id)}"
   end
 
-  # Delete all CH data for the given project IDs.
-  # Fire-and-forget: logs errors but does not raise.
+  # Delete all CH data for the given project IDs. Returns false (never raises) on a CH failure.
   def self.delete_projects(project_ids)
     unless Clickhouse.enabled?
       purge_spills(project_ids)
-      return
+      return true
     end
 
     ids = Array(project_ids).map { |id| Integer(id) }
-    return if ids.empty?
+    return true if ids.empty?
 
     id_list = ids.join(',') # safe to interpolate: every id is Integer()-coerced above
 
@@ -91,11 +90,13 @@ module ClickhouseDeleteService
         conn.execute("ALTER TABLE `#{table}` DELETE WHERE project_id IN (#{id_list})")
       end
     end
+    true
   rescue StandardError => e
     Rails.logger.error(
       "ClickhouseDeleteService: failed to delete projects #{project_ids.inspect} — " \
       "#{e.class}: #{e.message}"
     )
+    false
   end
 
   # Mark project IDs as deleted so a later DLQ replay can't resurrect their CH rows.

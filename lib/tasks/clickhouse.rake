@@ -209,6 +209,8 @@ namespace :clickhouse do
   desc 'Phase 6 GO/NO-GO parity gate: rollup + attribution parity for a project/range. ' \
        'PROJECT_ID=.. START=YYYY-MM-DD END=YYYY-MM-DD. Exits non-zero on FAIL.'
   task parity_gate: :environment do
+    # The PG oracle sums a month of link_daily_statistics; prod's request-level timeout kills that on big tenants.
+    ActiveRecord::Base.connection.execute("SET statement_timeout = '15min'")
     project_id = Integer(ENV.fetch('PROJECT_ID'))
     start_date = Date.parse(ENV.fetch('START'))
     end_date = Date.parse(ENV.fetch('END'))

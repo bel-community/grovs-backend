@@ -40,6 +40,14 @@ class DeleteInstanceJobTest < ActiveSupport::TestCase
     assert_equal project_ids.sort, Array(captured).sort
   end
 
+  test "a failed ClickHouse sweep raises before the projects and instance are deleted" do
+    ClickhouseDeleteService.stub(:delete_projects, ->(_ids) { false }) do
+      assert_raises(RuntimeError) { DeleteInstanceJob.new.perform(@instance.id) }
+    end
+    assert Instance.exists?(@instance.id), "instance must survive so the retry can redo the sweep"
+    assert Project.exists?(@project.id)
+  end
+
   test "nonexistent instance returns early without deleting anything" do
     job = DeleteInstanceJob.new
     original_count = Instance.count

@@ -34,6 +34,23 @@ class QuickLinksTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Lost in the Void"
   end
 
+  test "get_link hands destinations to the script as JSON, so & survives HTML escaping" do
+    @quick_link.update!(ios_phone: "https://apps.apple.com/app?a=1&b=2")
+    get "/#{@quick_link.path}", headers: { "Host" => @host }
+    assert_response :ok
+    assert_includes response.body, "handleQuickLinkRedirect.apply(null, ["
+    assert_match(%r{apps\.apple\.com/app\?a=1(\\u0026|&)b=2}, response.body)
+    assert_not_includes response.body, "&amp;b=2"
+  end
+
+  test "create rejects a javascript: desktop destination" do
+    assert_no_difference "QuickLink.count" do
+      post "/create", params: { title: "xss", desktop: "javascript:alert(document.domain)" }, headers: { "Host" => @host }
+    end
+    assert_response :unprocessable_entity
+    assert_match(/Desktop must be a valid URL/, JSON.parse(response.body)["error"])
+  end
+
   # --- create ---
 
   test "create with valid params creates QuickLink and returns JSON" do

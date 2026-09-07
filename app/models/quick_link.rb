@@ -3,12 +3,13 @@ class QuickLink < ApplicationRecord
 
   has_one_attached :image
 
-  validate :path_must_be_unique, on: :create
-  validate :ios_phone_must_be_valid_url
-  validate :android_phone_must_be_valid_url
+  DESTINATIONS = %i[ios_phone ios_tablet android_phone android_tablet desktop desktop_mac desktop_windows desktop_linux].freeze
+  # Every destination lands in window.location.href on the public page; these would run script there.
+  BLOCKED_SCHEMES = %w[javascript data vbscript blob file about].freeze
 
-  validates :ios_tablet, :android_tablet, :desktop_mac, :desktop_windows, :desktop_linux, http_url: true, allow_blank: true
-  validate :optional_urls_must_be_valid
+  validate :path_must_be_unique, on: :create
+  before_validation :prefix_bare_hosts
+  validate :destinations_must_be_navigable
 
   def image_resource
     if image_url
@@ -30,16 +31,6 @@ class QuickLink < ApplicationRecord
     end
   end
 
-  def ios_phone_must_be_valid_url
-    return if ios_phone.blank? # Skip if blank
-    errors.add(:ios_phone, "is not a valid URL") unless valid_url?(ios_phone)
-  end
-
-  def android_phone_must_be_valid_url
-    return if android_phone.blank? # Skip if blank
-    errors.add(:android_phone, "is not a valid URL") unless valid_url?(android_phone)
-  end
-
   def full_path(domain)
     "#{domain.display_host}/#{path}"
   end
@@ -48,47 +39,33 @@ class QuickLink < ApplicationRecord
     "https://#{full_path(domain)}"
   end
 
-  def valid_url?(url)
-    # Skip processing if url is nil
-    return false if url.nil?
-  
-    url = url.strip
-  
-    # Try parsing the URL as is
-    begin
-      uri = URI.parse(url)
+  def destinations
+    DESTINATIONS.map { |f| self[f].presence }
+  end
 
-      # If the URI scheme is nil (no scheme provided), attempt to parse with http:// prefix
-      if uri.scheme.nil?
-        # Check if the URL looks like a domain name (has a dot and no spaces)
-        if url.include?('.') && !url.include?(' ')
-          uri = URI.parse("http://#{url}")
-        else
-          return false
-        end
-      end
+  # "www.example.com" was accepted before; stored as-is it navigates relatively, so give it the scheme it implies.
+  def prefix_bare_hosts
+    DESTINATIONS.each do |field|
+      value = self[field].to_s.strip
+      next if value.blank? || scheme_of(value) || !value.include?(".") || value.include?(" ")
 
-      # Check if the host (domain) is present and valid
-      uri.host.present? && uri.host.include?('.')
-    rescue URI::InvalidURIError, TypeError
-      # If parsing fails, return false
-      false
+      self[field] = "https://#{value}"
     end
   end
 
-  def optional_urls_must_be_valid
-    optional_fields = [
-      :ios_tablet,
-      :android_tablet,
-      :desktop_mac,
-      :desktop_windows,
-      :desktop_linux
-    ]
-  
-    optional_fields.each do |field|
-      if self[field].present? && !valid_url?(self[field])
-        errors.add(field, 'must be a valid URL')
-      end
+  # Any scheme (https, myapp://) except the blocked ones; scheme-less values would navigate relatively.
+  def destinations_must_be_navigable
+    DESTINATIONS.each do |field|
+      next if self[field].blank?
+
+      scheme = scheme_of(self[field])
+      errors.add(field, "must be a valid URL") if scheme.blank? || BLOCKED_SCHEMES.include?(scheme)
     end
+  end
+
+  def scheme_of(value)
+    URI.parse(value.strip).scheme&.downcase
+  rescue URI::InvalidURIError
+    nil
   end
 end

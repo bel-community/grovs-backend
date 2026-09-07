@@ -19,5 +19,5 @@
 <%= javascript_include_tag 'quick_links_redirects.js' %>
 
 <script type="text/javascript">
- handleQuickLinkRedirect('<%=@link.ios_phone %>', '<%=@link.ios_tablet %>', '<%=@link.android_phone %>', '<%=@link.android_tablet %>','<%=@link.desktop %>', '<%=@link.desktop_mac %>', '<%=@link.desktop_windows %>', '<%=@link.desktop_linux %>')
+ handleQuickLinkRedirect.apply(null, <%= json_escape(@link.destinations.to_json).html_safe %>)
 </script>

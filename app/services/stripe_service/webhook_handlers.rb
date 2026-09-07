@@ -7,6 +7,7 @@ module StripeService::WebhookHandlers
     subscription_id = event[:data][:object][:subscription]
     customer_id = event[:data][:object][:customer]
     instance_id = event[:data][:object][:client_reference_id]
+    return if subscription_id.blank? # mode: "payment" checkout, nothing to hydrate
 
     payment_intent = StripePaymentIntent.where(instance_id: instance_id).order(id: :desc).first
     unless payment_intent
@@ -16,43 +17,50 @@ module StripeService::WebhookHandlers
 
     instance = payment_intent.instance
 
-    # Create the subscription
-    StripeSubscription.create!(instance_id: instance.id,
-        stripe_payment_intent_id: payment_intent.id,
-        subscription_id: subscription_id,
-        product_type: payment_intent.product_type,
-        active: false,
-        status: "pending",
-        customer_id: customer_id
-    )
+    # Idempotent: a retrieve failure below re-raises so Stripe redelivers, and the redelivery must find this row.
+    subscription = StripeSubscription.find_or_create_by!(subscription_id: subscription_id) do |s|
+      s.assign_attributes(instance_id: instance.id, stripe_payment_intent_id: payment_intent.id,
+                          product_type: payment_intent.product_type, active: false, status: "pending", customer_id: customer_id)
+    end
+    hydrate_from_stripe(subscription, instance)
   end
 
-  def handle_subscription_created(event)
-    subscription_id = event[:data][:object][:id]
-    status = event[:data][:object][:status]
-    trial_end = event[:data][:object][:trial_end]
-    subscription_item_id = event[:data][:object][:items][:data][0][:id]
+  # subscription.created can land before checkout (and is then already marked processed), so read the truth now.
+  def hydrate_from_stripe(subscription, instance)
+    remote = Stripe::Subscription.retrieve(subscription.subscription_id)
+    apply_subscription_snapshot(subscription, instance, status: remote[:status], item_id: first_item_id(remote))
+  end
 
-    subscription = StripeSubscription.find_by(subscription_id: subscription_id)
-    unless subscription
-      # Could not find this subscription
-      return
-    end
+  def first_item_id(object)
+    object[:items]&.[](:data)&.first&.[](:id)
+  end
 
-    instance = Instance.find_by(id: subscription.instance_id)
-    unless instance
-      # The user does not exist
-      return
-    end
-
+  def apply_subscription_snapshot(subscription, instance, status:, item_id:)
     # Don't enable until the first charge settles: incomplete/incomplete_expired stay off.
     enabled = %w[active trialing].include?(status)
     subscription.active = enabled
     subscription.status = status
-    subscription.subscription_item_id = subscription_item_id
+    subscription.subscription_item_id = item_id
     subscription.save!
 
     mark_project_enabled(instance, enabled)
+  end
+
+  def handle_subscription_created(event)
+    object = event[:data][:object]
+    subscription = StripeSubscription.find_by(subscription_id: object[:id])
+    return unless subscription
+
+    instance = Instance.find_by(id: subscription.instance_id)
+    return unless instance
+
+    # created is the oldest snapshot there is; once checkout hydrated the row it only gets to fill the item id.
+    if subscription.status != "pending"
+      subscription.update!(subscription_item_id: subscription.subscription_item_id || first_item_id(object))
+      return
+    end
+
+    apply_subscription_snapshot(subscription, instance, status: object[:status], item_id: first_item_id(object))
   end
 
   def handle_subscription_continued(event)
@@ -99,6 +107,9 @@ module StripeService::WebhookHandlers
       # The project does not exist
       return
     end
+
+    # Usage reporting needs the item id; fill it if the created event was missed.
+    subscription.subscription_item_id ||= first_item_id(event[:data][:object])
 
     if status == "canceled" || cancel_at || canceled_at || cancel_at_period_end
       if status == "canceled"

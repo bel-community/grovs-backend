@@ -21,11 +21,6 @@ class NotificationMessageService
       return
     end
 
-    if notification.notification_messages.count > 0
-      Rails.logger.warn("No messages")
-      return
-    end
-
     platforms = target.platforms
     if platforms.nil? || platforms.empty?
       # No platform restriction - create for all platforms
@@ -58,19 +53,15 @@ class NotificationMessageService
   end
   
   def self.create_messages_for_visitors(notification, visitors)
-    messages = []
-    visitors.each do |visitor|
-      message = NotificationMessage.new
-      message.visitor = visitor
-      message.notification = notification
+    # Per-recipient: a retry after a partial send resumes with the visitors still missing a message.
+    done = NotificationMessage.where(notification_id: notification.id, visitor_id: visitors.select(:id)).pluck(:visitor_id).to_set
+    pending = visitors.reject { |visitor| done.include?(visitor.id) }
+    return if pending.empty?
 
-      messages << message
-    end
-
-    # without validations
+    messages = pending.map { |visitor| NotificationMessage.new(visitor: visitor, notification: notification) }
     NotificationMessage.import messages, validate: false, batch_size: 10000
 
-    self.send_push_notifications_for_visitors(notification, visitors)
+    self.send_push_notifications_for_visitors(notification, pending)
   end
 
   def self.send_push_notifications_for_visitors(notification, visitors)
@@ -78,9 +69,14 @@ class NotificationMessageService
       return
     end
 
+    failed = 0
     visitors.each do |visitor|
       self.send_push_to_visitor(visitor, notification)
+    rescue StandardError => e
+      failed += 1
+      Rails.logger.error("NotificationMessageService: push for visitor #{visitor.id} failed: #{e.class} - #{e.message}")
     end
+    raise "#{failed} push(es) failed for notification #{notification.id}" if failed.positive?
 
     Rails.logger.debug("do rpush push")
     Rpush.push

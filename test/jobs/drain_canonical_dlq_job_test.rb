@@ -3,16 +3,17 @@
 require "test_helper"
 
 class DrainCanonicalDlqJobTest < ActiveJob::TestCase
-  test "calls drain_canonical_dlq with the configured limit" do
+  test "calls drain_canonical_dlq with the configured limit and the single-flight deadline" do
     called_with = nil
-    drain = lambda do |limit:|
-      called_with = limit
+    drain = lambda do |limit:, deadline:|
+      called_with = [limit, deadline]
       0
     end
     ClickhouseWriteService.stub(:drain_canonical_dlq, drain) do
       DrainCanonicalDlqJob.new.perform
     end
-    assert_equal 100, called_with
+    assert_equal 100, called_with[0]
+    assert_in_delta DrainCanonicalDlqJob::LOCK_TTL.from_now, called_with[1], 5
   end
 
   test "swallows errors and never raises" do

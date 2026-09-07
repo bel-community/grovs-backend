@@ -11,8 +11,6 @@ class Api::V1::UsersController < ApplicationController
     return render(json: { error: "Invalid client ID" }, status: :forbidden) unless client_app
 
     user = UserAccountService.register(email: user_params[:email], password: user_params[:password], name: user_params[:name])
-    # register also completes a pending invitation in place; a fresh sign-up has no instances and fans out to nothing.
-    Audit.record_for_user(user: user, action: "user.invite_accepted", actor: AuditActor.user(user, via: "password"))
     respond_with_auth_token_for_user(user, client_app)
   rescue ArgumentError
     render(json: { error: "An account with this email already exists" }, status: :conflict)

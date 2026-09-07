@@ -260,12 +260,12 @@ module ClickhouseWriteService
   # Replay DLQ'd batches once CH is back. drain_*_dlq wrappers select the queue; the entry's
   # stored `table` selects the insert target (default keeps old canonical entries working).
   # Idempotent (ReplacingMergeTree on each table), so replaying an already-delivered batch is safe.
-  def self.drain_canonical_dlq(limit: 100)
-    drain_dlq(CANONICAL_DLQ_KEY, default_table: 'events', limit: limit)
+  def self.drain_canonical_dlq(limit: 100, deadline: nil)
+    drain_dlq(CANONICAL_DLQ_KEY, default_table: 'events', limit: limit, deadline: deadline)
   end
 
-  def self.drain_purchase_dlq(limit: 100)
-    drain_dlq(PURCHASE_DLQ_KEY, default_table: 'purchase_events', limit: limit)
+  def self.drain_purchase_dlq(limit: 100, deadline: nil)
+    drain_dlq(PURCHASE_DLQ_KEY, default_table: 'purchase_events', limit: limit, deadline: deadline)
   end
 
   # Combined parked-batch backlog across both DLQs, for depth monitoring/alerting.
@@ -278,12 +278,18 @@ module ClickhouseWriteService
 
   # Pops up to `limit` entries; a batch that still fails is re-parked (tail) so it doesn't
   # block the queue or spin. Returns the number of batches successfully drained.
-  def self.drain_dlq(dlq_key, default_table:, limit: 100)
+  def self.drain_dlq(dlq_key, default_table:, limit: 100, deadline: nil)
     drained = 0
+    processing_key = "#{dlq_key}:processing"
+    # Batches a killed drain left in flight return to the queue; only a confirmed insert acks one.
+    REDIS.with { |conn| nil while conn.rpoplpush(processing_key, dlq_key) }
     limit.times do
-      raw = REDIS.with { |conn| conn.rpop(dlq_key) }
+      break if deadline && Time.current >= deadline # past the lock TTL the next run would reclaim our in-flight batch
+
+      raw = REDIS.with { |conn| conn.rpoplpush(dlq_key, processing_key) }
       break if raw.nil?
 
+      repark = false
       begin
         # Parse inside the per-entry begin so a malformed entry is skipped (dropped,
         # not re-parked forever) and the drain keeps going on the next entry.
@@ -296,12 +302,15 @@ module ClickhouseWriteService
         drained += 1
       rescue JSON::ParserError => e
         Rails.logger.warn("ClickhouseWriteService: DLQ drain skipping unparseable entry: #{e.class} - #{e.message}")
-        next
       rescue StandardError => e
-        REDIS.with { |conn| conn.lpush(dlq_key, raw) }
+        repark = true
         Rails.logger.warn("ClickhouseWriteService: DLQ drain re-parked a batch: #{e.class} - #{e.message}")
-        break
       end
+      REDIS.with do |conn|
+        conn.lpush(dlq_key, raw) if repark
+        conn.lrem(processing_key, 1, raw)
+      end
+      break if repark
     end
     drained
   rescue Redis::BaseError => e

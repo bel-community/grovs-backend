@@ -210,6 +210,21 @@ class ScimUsersTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
+  test "PUT and PATCH refuse to touch an operator who is a member of the instance" do
+    root = users(:super_admin_user)
+    root.update!(super_admin: true, email: "root@example.com", provider: @conn.provider_key)
+    InstanceRole.create!(instance: @instance, user: root, role: "member")
+
+    put "/scim/v2/Users/#{root.id}", params: user_body(user_name: "root@example.com", email: "attacker@example.com"), headers: headers
+    assert_response :forbidden
+    assert_equal "root@example.com", root.reload.email
+
+    body = { schemas: [PATCH_OP], Operations: [{ op: "replace", path: "emails[type eq \"work\"].value", value: "attacker@example.com" }] }.to_json
+    patch "/scim/v2/Users/#{root.id}", params: body, headers: headers
+    assert_response :forbidden
+    assert_equal "root@example.com", root.reload.email
+  end
+
   test "PUT renames UPN and email within verified domains, refuses foreign or taken addresses" do
     post "/scim/v2/Users", params: user_body(user_name: "alice@example.com"), headers: headers
     id = json["id"]

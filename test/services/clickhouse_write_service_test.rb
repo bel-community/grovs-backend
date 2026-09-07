@@ -442,6 +442,40 @@ class ClickhouseWriteServiceTest < ActiveSupport::TestCase
     assert_equal from_time, from_string, "Sub-ms Time and its iso8601(3) string must floor to the same ms"
   end
 
+  # --- DLQ drain durability ---
+
+  test "drain_dlq keeps a failing batch and recovers batches a killed drain left in flight" do
+    key = ClickhouseWriteService::CANONICAL_DLQ_KEY
+    processing = "#{key}:processing"
+    bad = { table: "events", rows: [{ project_id: 1 }] }.to_json
+    stale = { table: "events", rows: [{ project_id: 2 }] }.to_json
+    REDIS.with { |c| c.del(key, processing) }
+
+    inserted = []
+    insert = lambda do |_table, rows|
+      raise "ch down" if rows.first[:project_id] == 1
+
+      inserted << rows
+    end
+    ClickhouseWriteService.stub(:raw_insert, insert) do
+      ClickhouseDeleteService.stub(:reject_tombstoned, ->(rows) { rows }) do
+        REDIS.with { |c| c.lpush(processing, stale) }
+        assert_equal 1, ClickhouseWriteService.drain_canonical_dlq, "a batch a killed drain left in flight replays"
+        assert_equal [[{ project_id: 2 }]], inserted
+
+        REDIS.with { |c| c.lpush(key, bad) }
+        assert_equal 0, ClickhouseWriteService.drain_canonical_dlq
+      end
+    end
+
+    REDIS.with do |c|
+      assert_equal 0, c.llen(processing), "nothing stays in flight after the drain"
+      assert_equal [bad], c.lrange(key, 0, -1), "the failing batch is kept, not lost"
+    end
+  ensure
+    REDIS.with { |c| c.del(key, processing) }
+  end
+
   # --- DLQ eviction ---
 
   test "route_to_dlq emits an eviction metric when the DLQ is already full" do

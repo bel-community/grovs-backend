@@ -1,23 +1,11 @@
 class UserAccountService
-  # Registers a new user or accepts a pending invitation.
-  # Returns the User record.
+  # Registers a new user. A pending invitee already holds an InstanceRole, so only accept_invite
+  # (token-authorized) may set that account's password — never a public sign-up on the bare email.
   def self.register(email:, password:, name:)
-    user = User.find_for_email(email)
+    raise ArgumentError, "An account with this email already exists" if User.find_for_email(email)
 
-    if user
-      if user.invitation_token.present? && user.invitation_accepted_at.nil?
-        user.password = password
-        user.name = name
-        user.save!
-        user.update(invitation_accepted_at: Time.current, invitation_token: nil)
-      else
-        raise ArgumentError, "An account with this email already exists"
-      end
-    else
-      user = User.create!(email: email, password: password, name: name)
-      WelcomeMailer.welcome(user).deliver_later
-    end
-
+    user = User.create!(email: email, password: password, name: name)
+    WelcomeMailer.welcome(user).deliver_later
     user
   end
 

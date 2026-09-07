@@ -424,19 +424,7 @@ module Billing
 
     def self.rollup_parity(rollup:, project_id:, start_date:, end_date:)
       config = ROLLUP_PARITY.fetch(rollup)
-      pg = pg_metric_sums(config[:pg_table], config[:metrics], project_id, start_date, end_date)
-      ch = if config[:ch_sums]
-             send(config[:ch_sums], config[:metrics], project_id, start_date, end_date)
-           else
-             ch_metric_sums(config[:ch_table], config[:metrics], project_id, start_date, end_date)
-           end
-      # PG DPM.installs is folded (installs+reinstalls); CH is pure — fold for comparison
-      ch[:installs] = ch[:installs].to_i + ch[:reinstalls].to_i if rollup == :project && ch
-
-      covered = config[:metrics].index_with do |metric|
-        compare_counts(project_id, start_date, end_date, pg[metric].to_i, ch && ch[metric]&.to_i,
-                       tolerant: REDELIVERY_TOLERANT_METRICS.include?(metric))
-      end
+      covered = config[:metrics].empty? ? {} : summed_metric_parity(rollup, config, project_id, start_date, end_date)
 
       if (fs_metrics = config[:first_seen_metrics])
         fs_pg = pg_metric_sums(config[:pg_table], fs_metrics, project_id, start_date, end_date)
@@ -457,6 +445,24 @@ module Billing
 
       ParityReport.new(rollup: rollup, covered: covered, uncovered: config.fetch(:uncovered))
     end
+
+    # Only for rollups with summable columns: an empty list would build "SELECT  FROM", a CH syntax error.
+    def self.summed_metric_parity(rollup, config, project_id, start_date, end_date)
+      pg = pg_metric_sums(config[:pg_table], config[:metrics], project_id, start_date, end_date)
+      ch = if config[:ch_sums]
+             send(config[:ch_sums], config[:metrics], project_id, start_date, end_date)
+           else
+             ch_metric_sums(config[:ch_table], config[:metrics], project_id, start_date, end_date)
+           end
+      # PG DPM.installs is folded (installs+reinstalls); CH is pure — fold for comparison
+      ch[:installs] = ch[:installs].to_i + ch[:reinstalls].to_i if rollup == :project && ch
+
+      config[:metrics].index_with do |metric|
+        compare_counts(project_id, start_date, end_date, pg[metric].to_i, ch && ch[metric]&.to_i,
+                       tolerant: REDELIVERY_TOLERANT_METRICS.include?(metric))
+      end
+    end
+    private_class_method :summed_metric_parity
 
     # One grouped query per metric; organic has no day-grouped reader, so it stays per-day.
     DERIVED_DAILY_READERS = {

@@ -71,14 +71,37 @@ class NotificationMessageServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "create_notification_messages_for_existing_users returns early if notification already has messages" do
-    notification = Notification.create!(title: "Has Messages", project: @project, archived: false)
-    NotificationTarget.create!(notification: notification, new_users: false, existing_users: true)
+  test "create_notification_messages_for_existing_users skips visitors that already have a message and fills in the rest" do
+    notification = Notification.create!(title: "Has Messages", project: @project, archived: false, send_push: false)
+    NotificationTarget.create!(notification: notification, new_users: false, existing_users: true, platforms: [])
     NotificationMessage.create!(notification: notification, visitor: @ios_visitor)
 
-    assert_no_difference "NotificationMessage.count" do
+    NotificationMessageService.create_notification_messages_for_existing_users(notification)
+
+    assert_equal 1, NotificationMessage.where(notification: notification, visitor: @ios_visitor).count
+    assert NotificationMessage.exists?(notification: notification, visitor: @android_visitor)
+    assert NotificationMessage.exists?(notification: notification, visitor: @web_visitor)
+  end
+
+  test "a retry after a push failure mid-way delivers the remaining platforms" do
+    notification = Notification.create!(title: "Partial", project: @project, archived: false, send_push: true)
+    NotificationTarget.create!(notification: notification, new_users: false, existing_users: true, platforms: [])
+
+    calls = 0
+    boom = lambda do |_notification, _visitors|
+      calls += 1
+      raise "apns down" if calls == 1
+    end
+    NotificationMessageService.stub(:send_push_notifications_for_visitors, boom) do
+      assert_raises(RuntimeError) { NotificationMessageService.create_notification_messages_for_existing_users(notification) }
+      assert NotificationMessage.exists?(notification: notification, visitor: @ios_visitor)
+      assert_not NotificationMessage.exists?(notification: notification, visitor: @android_visitor)
+
       NotificationMessageService.create_notification_messages_for_existing_users(notification)
     end
+    assert NotificationMessage.exists?(notification: notification, visitor: @android_visitor)
+    assert NotificationMessage.exists?(notification: notification, visitor: @web_visitor)
+    assert_equal 1, NotificationMessage.where(notification: notification, visitor: @ios_visitor).count
   end
 
   test "create_notification_messages_for_existing_users with no platform restriction creates messages for all platforms" do
@@ -196,7 +219,7 @@ class NotificationMessageServiceTest < ActiveSupport::TestCase
 
   # === duplicate message behavior ===
 
-  test "create_notification_messages_for_existing_users called twice does not create duplicates due to count guard" do
+  test "create_notification_messages_for_existing_users called twice does not create duplicates" do
     notification = Notification.create!(title: "Dedup", project: @project, archived: false, send_push: false)
     NotificationTarget.create!(notification: notification, new_users: false, existing_users: true, platforms: [])
 
@@ -205,7 +228,6 @@ class NotificationMessageServiceTest < ActiveSupport::TestCase
     first_count = NotificationMessage.where(notification: notification).count
     assert first_count > 0
 
-    # Second call should return early because notification_messages.count > 0
     assert_no_difference "NotificationMessage.count" do
       NotificationMessageService.create_notification_messages_for_existing_users(notification)
     end

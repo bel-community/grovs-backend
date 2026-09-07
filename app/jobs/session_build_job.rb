@@ -20,6 +20,7 @@ class SessionBuildJob < ApplicationJob
   MAX_SESSION_ID_LENGTH = 256
   EVENT_PAGE_SIZE = 50_000
   LOCK_TTL = 30.minutes # single-flight: overlapping runs would double-insert (session_events has no dedup)
+  PENDING_SUMMARY_TTL = 7.days
 
   # Returns :skipped, :disabled, or the failed project ids, so a rebuild can refuse to
   # publish rollups over a range this run did not sessionize.
@@ -68,23 +69,49 @@ class SessionBuildJob < ApplicationJob
   def build_sessions_for_project(project_id)
     pid = Integer(project_id)
     buckets = eligible_visitor_buckets(pid)
-    return if buckets.empty?
+    pending = pending_summary_work(pid)
+    return if buckets.empty? && pending[:sessions].empty?
 
-    affected_sessions = sessionize_and_insert(pid, buckets)
-    return unless affected_sessions.any?
-
-    alias_pairs = build_alias_pairs(buckets)
-    build_session_summaries(pid, affected_sessions, alias_pairs)
-    purge_superseded_summaries(pid, alias_pairs.keys, affected_sessions)
+    affected_sessions = pending[:sessions].dup
+    alias_pairs = pending[:aliases].merge(build_alias_pairs(buckets))
+    begin
+      sessionize_and_insert(pid, buckets, affected_sessions)
+      build_session_summaries(pid, affected_sessions, alias_pairs) if affected_sessions.any?
+      purge_superseded_summaries(pid, alias_pairs.keys, affected_sessions)
+    rescue StandardError
+      # Inserted session_events rows are never re-selected: park every session touched so far, with its merge aliases.
+      remember_pending_summaries(pid, affected_sessions, alias_pairs)
+      raise
+    end
+    clear_pending_summaries(pid)
   end
 
-  # Returns the Set of session_ids that received new events.
-  def sessionize_and_insert(pid, buckets)
-    affected = Set.new
-    buckets.each_slice(BUCKET_BATCH_SIZE) do |batch|
-      batch_sessions = sessionize_visitor_batch(pid, batch)
-      affected.merge(batch_sessions) if batch_sessions
-    end
+  def pending_summary_key(pid) = "session_build:pending_summaries:#{pid}"
+
+  def pending_summary_work(pid)
+    raw = REDIS.with { |c| c.get(pending_summary_key(pid)) }
+    parsed = raw ? JSON.parse(raw) : {}
+    aliases = (parsed["aliases"] || {}).to_h { |from, to| [from.to_i, to.to_i] }
+    # A parked A->B may have been followed by B->C: A and B's rows must both land under C, not the retired B.
+    current = ClickhouseIdentityMapService.resolve_many(pid, aliases.values)
+    chained = current.reject { |from, to| from == to }
+    { sessions: Array(parsed["sessions"]).to_set, aliases: aliases.transform_values { |to| current.fetch(to, to) }.merge(chained) }
+  end
+
+  def remember_pending_summaries(pid, session_ids, alias_pairs)
+    payload = { sessions: session_ids.to_a, aliases: alias_pairs }.to_json
+    REDIS.with { |c| c.set(pending_summary_key(pid), payload, ex: PENDING_SUMMARY_TTL.to_i) }
+  rescue Redis::BaseError => e
+    Rails.logger.error("SessionBuildJob: could not park pending summaries for project #{pid}: #{e.message}")
+  end
+
+  def clear_pending_summaries(pid)
+    REDIS.with { |c| c.del(pending_summary_key(pid)) }
+  end
+
+  # Adds each session_id to `affected` BEFORE its rows are inserted, so a failed insert still parks it.
+  def sessionize_and_insert(pid, buckets, affected)
+    buckets.each_slice(BUCKET_BATCH_SIZE) { |batch| sessionize_visitor_batch(pid, batch, affected) }
     affected
   end
 
@@ -206,7 +233,7 @@ class SessionBuildJob < ApplicationJob
   end
 
   # Pages on (effective visitor, created_at); sessionization state carries across pages.
-  def sessionize_visitor_batch(pid, buckets)
+  def sessionize_visitor_batch(pid, buckets, affected_sessions = Set.new)
     raw_vids = buckets.flat_map { |_survivor, vids| Array(vids).map { |vid| Integer(vid) } }
     # The survivor may have no events of its own in the window, yet still own stored rows.
     scope_list = (raw_vids + buckets.map { |survivor, _| Integer(survivor) }).uniq.join(', ')
@@ -214,7 +241,6 @@ class SessionBuildJob < ApplicationJob
     alias_pairs = build_alias_pairs(buckets)
     eff = visitor_expr(alias_pairs, 'e.visitor_id')
 
-    affected_sessions = Set.new
     prior_sessions = fetch_prior_session_state(pid, scope_list, alias_pairs)
     state = {}
     cursor = nil
@@ -237,8 +263,6 @@ class SessionBuildJob < ApplicationJob
     tail_rows, tail_sessions = flush_pending_rows(state[:pending])
     affected_sessions.merge(tail_sessions)
     insert_session_rows(tail_rows)
-
-    affected_sessions.presence
   end
 
   def insert_session_rows(rows)

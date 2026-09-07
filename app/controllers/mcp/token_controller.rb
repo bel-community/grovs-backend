@@ -89,10 +89,16 @@ class Mcp::TokenController < ApplicationController
       scope: existing.scope
     )
     plain_access = new_token.generate_token
-    new_token.save!
 
-    # Revoke old token
-    existing.revoke!
+    # Claim-then-mint in one transaction: two racing refreshes cannot both mint a successor.
+    McpToken.transaction do
+      claimed = McpToken.where(id: existing.id, revoked_at: nil).update_all(revoked_at: Time.current)
+      if claimed.zero?
+        render json: { error: "invalid_grant", error_description: "Invalid refresh token" }, status: :bad_request
+        return
+      end
+      new_token.save!
+    end
 
     render json: {
       access_token: plain_access,
