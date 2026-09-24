@@ -7,8 +7,10 @@ class Api::V1::ServerSdkController < Api::V1::ProjectsBaseController
 
   API_KEY_USED_TTL = 24.hours
 
+  # With a `path`, creates the link on that path or updates the one already
+  # there, so a server can keep one link per entity without a dashboard login.
   def generate_link
-    link = build_and_save_sdk_link(platform_name: "API")
+    link = build_and_save_sdk_link(platform_name: "API", fixed_path: fixed_path_param)
 
     render json: {link: link.access_path}, status: :ok
   end
@@ -118,6 +120,20 @@ project: @project).call[:links]
 
   def title_param
     params.permit(:title)[:title]
+  end
+
+  def name_param
+    params.permit(:name)[:name]
+  end
+
+  FIXED_PATH_FORMAT = /\A[A-Za-z0-9._-]{1,100}\z/
+
+  def fixed_path_param
+    path = params.permit(:path)[:path].presence
+    return nil unless path
+    raise ActionController::BadRequest, "path must be 1-100 chars of letters, digits, '.', '_' or '-'" unless FIXED_PATH_FORMAT.match?(path)
+
+    path
   end
 
   def subtitle_param
