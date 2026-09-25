@@ -15,6 +15,25 @@ class Api::V1::ServerSdkController < Api::V1::ProjectsBaseController
     render json: {link: link.access_path}, status: :ok
   end
 
+  # Raw events of the project, oldest first, for a warehouse to pull
+  # incrementally: start_date (ISO 8601) is required, `cursor` pages.
+  def events
+    start_time = parse_iso_time(params.require(:start_date))
+    end_time = params[:end_date].present? ? parse_iso_time(params[:end_date]) : Time.current
+    return render(json: { error: "start_date and end_date must be ISO 8601" }, status: :bad_request) unless start_time && end_time
+
+    result = ::Analytics::EventsQueryService.list(
+      @project.id,
+      start_date: start_time,
+      end_date: end_time,
+      cursor: params[:cursor],
+      limit: params[:limit].presence || ::Analytics::EventsQueryService::MAX_LIMIT,
+      sort_by: "created_at",
+      sort_order: "asc"
+    )
+    render json: { data: result[:data], next_cursor: result[:next_cursor] }, status: :ok
+  end
+
   def link_details
     domain = @project.domain_for_project
 
@@ -114,6 +133,12 @@ project: @project).call[:links]
       end
       raise
     end
+  end
+
+  def parse_iso_time(value)
+    Time.iso8601(value.to_s)
+  rescue ArgumentError
+    nil
   end
 
   # Params

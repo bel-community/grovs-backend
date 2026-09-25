@@ -360,6 +360,7 @@ Rails.application.routes.draw do
         get 'sdk/link/:path', to: "server_sdk#link_details"
         get 'sdk/metrics_for_link/:path', to: 'server_sdk#metrics_for_link'
         get 'sdk/metrics_for_project', to: 'server_sdk#metrics_for_project'
+        get 'sdk/events', to: 'server_sdk#events'
 
       end
     end
