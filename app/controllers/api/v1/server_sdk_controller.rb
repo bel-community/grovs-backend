@@ -10,7 +10,7 @@ class Api::V1::ServerSdkController < Api::V1::ProjectsBaseController
   # With a `path`, creates the link on that path or updates the one already
   # there, so a server can keep one link per entity without a dashboard login.
   def generate_link
-    link = build_and_save_sdk_link(platform_name: "API", fixed_path: fixed_path_param)
+    link = build_and_save_sdk_link(platform_name: "API", image_url: image_url_param, fixed_path: fixed_path_param)
 
     render json: {link: link.access_path}, status: :ok
   end
@@ -163,6 +163,10 @@ project: @project).call[:links]
 
   def subtitle_param
     params.permit(:subtitle)[:subtitle]
+  end
+
+  def image_url_param
+    params.permit(:image_url)[:image_url]
   end
 
   def data_param
