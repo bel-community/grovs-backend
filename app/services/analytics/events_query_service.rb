@@ -30,8 +30,8 @@ module Analytics
     # Columns returned by the list endpoint. Excludes PII (ip, remote_ip),
     # internal fields (vendor_id, build, path), and large JSON blobs that
     # aren't needed for the event table view. The properties key is kept in the
-    # response shape, but deliberately not read from ClickHouse here; use #find
-    # for the full single-event payload.
+    # response shape but only read from ClickHouse with include_properties (the
+    # server SDK feed); use #find for the full single-event payload.
     LIST_ATTRIBUTE_COLUMNS = %w[
       event_id project_id event_type event_name screen_name
       visitor_id device_id link_id campaign_id session_id
@@ -41,6 +41,7 @@ module Analytics
       sdk_identifier engagement_time created_at
     ].freeze
     LIST_COLUMNS = (LIST_ATTRIBUTE_COLUMNS + ['NULL AS properties']).freeze
+    LIST_COLUMNS_WITH_PROPERTIES = (LIST_ATTRIBUTE_COLUMNS + ['properties']).freeze
 
     # --- Public API ---
 
@@ -51,7 +52,7 @@ module Analytics
     # degraded (e.g. timed out / QueryTooHeavy) — rows are still returned.
     def self.list(project_id, start_date:, end_date:, cursor: nil, limit: DEFAULT_LIMIT,
                   sort_by: 'created_at', sort_order: 'desc', search: nil, filters: [],
-                  include_count: false)
+                  include_count: false, include_properties: false)
       pid = Integer(project_id)
       limit = [[Integer(limit), 1].max, MAX_LIMIT].min
       sort_col = SORTABLE_COLUMNS.include?(sort_by) ? sort_by : 'created_at'
@@ -94,9 +95,10 @@ module Analytics
       end
       latest_columns << 'ingested_at'
       latest_columns.concat(dynamic_filter_columns(filters))
+      latest_columns |= ['properties'] if include_properties
 
       data = with_guard(<<~SQL).to_a
-        SELECT #{LIST_COLUMNS.join(', ')}
+        SELECT #{(include_properties ? LIST_COLUMNS_WITH_PROPERTIES : LIST_COLUMNS).join(', ')}
         FROM (
           SELECT #{latest_columns.join(', ')}
           FROM events
