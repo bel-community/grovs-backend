@@ -309,6 +309,37 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
     assert_no_match(/(?:^|,\s*)properties(?:\s*,|$)/, select_list)
   end
 
+  test 'list returns each event properties when include_properties is set' do
+    insert_ch_events([base_event(event_type: 'custom', event_name: 'app_updated',
+                                 properties: { 'previous_version' => '12.13.0', 'had_session' => false })])
+
+    result = Analytics::EventsQueryService.list(
+      @project.id,
+      start_date: 1.day.ago.to_date,
+      end_date: Date.current + 1,
+      include_properties: true
+    )
+
+    assert_equal 1, result[:data].size
+    assert_equal({ 'previous_version' => '12.13.0', 'had_session' => false }, result[:data].first['properties'])
+  end
+
+  test 'list with include_properties and a property filter selects properties once' do
+    insert_ch_events([base_event(event_id: 'ip_plan_pro', properties: { 'plan' => 'pro' }),
+                      base_event(event_id: 'ip_plan_free', properties: { 'plan' => 'free' })])
+
+    result = Analytics::EventsQueryService.list(
+      @project.id,
+      start_date: 1.day.ago.to_date,
+      end_date: Date.current + 1,
+      filters: [{ 'field' => 'plan', 'operator' => 'is', 'value' => 'pro' }],
+      include_properties: true
+    )
+
+    assert_equal ['ip_plan_pro'], result[:data].map { |e| e['event_id'] }
+    assert_equal({ 'plan' => 'pro' }, result[:data].first['properties'])
+  end
+
   test 'list reads the fast explorer table without FINAL' do
     captured_sql = nil
 

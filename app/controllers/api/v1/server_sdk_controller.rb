@@ -16,7 +16,9 @@ class Api::V1::ServerSdkController < Api::V1::ProjectsBaseController
   end
 
   # Raw events of the project, oldest first, for a warehouse to pull
-  # incrementally: start_date (ISO 8601) is required, `cursor` pages.
+  # incrementally: start_date (ISO 8601) is required, `cursor` pages. Unlike
+  # the dashboard list it carries each event's properties: custom events are
+  # only useful downstream with them.
   def events
     start_time = parse_iso_time(params.require(:start_date))
     end_time = params[:end_date].present? ? parse_iso_time(params[:end_date]) : Time.current
@@ -29,7 +31,8 @@ class Api::V1::ServerSdkController < Api::V1::ProjectsBaseController
       cursor: params[:cursor],
       limit: params[:limit].presence || ::Analytics::EventsQueryService::MAX_LIMIT,
       sort_by: "created_at",
-      sort_order: "asc"
+      sort_order: "asc",
+      include_properties: true
     )
     render json: { data: result[:data], next_cursor: result[:next_cursor] }, status: :ok
   end
