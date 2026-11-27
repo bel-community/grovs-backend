@@ -30,8 +30,8 @@ module Analytics
     # Columns returned by the list endpoint. Excludes PII (ip, remote_ip),
     # internal fields (vendor_id, build, path), and large JSON blobs that
     # aren't needed for the event table view. The properties key is kept in the
-    # response shape, but deliberately not read from ClickHouse here; use #find
-    # for the full single-event payload.
+    # response shape but only read from ClickHouse with include_properties (the
+    # server SDK feed); use #find for the full single-event payload.
     LIST_ATTRIBUTE_COLUMNS = %w[
       event_id project_id event_type event_name screen_name
       visitor_id device_id link_id campaign_id session_id
